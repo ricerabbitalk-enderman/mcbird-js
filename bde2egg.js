@@ -1,13 +1,49 @@
-// mcbird/beak.js
-// BDEngine が出力する zip データパックから
-// モデルデータとアニメデータを egg:animation で利用可能な形式に変換します.
+// mcbird/bde2egg.js by ricerabbitalk-enderman
+// BDEngine が出力するモデルデータ（ディレクトリ or zipアーカイブ）から
+// モデルデータとアニメデータを egg:animation で利用可能なデータパック形式に変換します.
+// 
 // [使い方]
-// >node mcbird/beak.js <input_root> <output_root> [<package_name = "beak"> <chunk_size = 50>]
-// input_root:   複数の zip ファイルが格納されているルートディレクトリ
-// output_root:  egg データパックとその他データパックが格納されているルートディレクトリ
-// package_name: 変換後のデータパック名
+// >node mcbird/bde2egg.js <model_dir> <output_dir> [<chunk_size = 50>]
+// model_dir:    複数のモデルデータが格納されているルディレクトリ
+// output_dir:   データパックを出力するディレクトリ
 // chunk_size:   １つのファイルに格納するデータ単位（フレーム数）
-// データは minecraft:load によって自動で読み込まれます.
+// 
+// [例]
+// <model_dir>/<model_name>.zip
+// というモデルデータが存在した場合
+// <output_dir>
+// というデータパックを生成します
+//
+// モデルエンティティの生成は
+// function #egg:bdengine/<model_name>
+// という関数タグで実行可能です.
+// 初期化処理にエンティティを探索しやすいよう
+// __uninitialized タグが付与された状態で召喚されます.
+// __uninitialized タグは初期化後必ず削除してください. 
+// 
+// アニメデータは
+// storage egg:bdengine <model_name>-<animation_name>
+// に格納されています.
+// 
+// [egg での利用]
+// egg で利用する際は
+// 
+// function #egg:bdengine/<model_name>
+// execute as @e[tag=__uninitialized] run function egg:model/-enable
+// execute as @e[tag=__uninitialized] run function egg:animation/-enable
+// data modify egg:animation/-set << {repeat:-1,path:<model_name>-<animation_name>}
+// execute as @e[tag=__uninitialized] run function egg:animation/-set
+// execute as @e[tag=__uninitialized] run function egg:animation/-play
+// tag @e[tag=__uninitialized] remove __uninitialized
+// としてください.
+// 
+// 簡略化されたマクロ版もあります.
+// # モデルエンティティを生成（アニメーションなし）.
+// function egg:macro/new_model {model:<model_name>}
+// # モデルエンティティを生成しアニメーションさせる.
+// function egg:macro/new_animation {repeat:-1,model:<model_name>,anime:<animation_name>}
+// # 既存のモデルエンティティにアニメーションさせる.
+// execteu as @e[...] run function egg:macro/play_animation {repeat:-1,model:<model_name>,anime:<animation_name>}
 
 // 無名関数スコープ.
 (async () => {
@@ -15,7 +51,7 @@
   'use strict';
 
   // 設定変数.
-  const NEARLY_ZERO = 1e-10;
+  const NEARLY_ZERO = 1e-6;
   const MIN_VERSION = [82, 0];
   const MAX_VERSION = [94, 1];
   const FILE_HEADER = '# this data is created via BDEngine.\n# Processed by mcbird/bde2egg.js.\n';
@@ -197,7 +233,10 @@
             let val = e;
             if (typeof val === 'number') {
               if (val === 0) val = NEARLY_ZERO; // 0 は storage に残らないので限りなく 0 に近い値に変換.
-              const rounded = parseFloat(val.toFixed(6));
+              let rounded = parseFloat(val.toFixed(6));
+              if (rounded === 0 && val !== 0) { // 丸められた 0 も 0 に近い値に変換.
+                rounded = val > 0 ? NEARLY_ZERO : -NEARLY_ZERO;
+              }
               return rounded.toString() + 'f';
             }
             return JsonToSNBT.serialize(e);
@@ -244,22 +283,56 @@
     // Passengers をデータ化.
     const passengers = new JsonFromSNBT(match[1]).parse();
 
+    // looks 配列.
+    const looks = [];
+
     // 横並びだった Passengers エンティティ達を Passengers を利用して縦に積み上げる.
     // 頂上のエンティティが index + 1 を参照しても undefined なので問題ない.
-    for (let index = 0; index < passengers.length - 1; index++) {
-      passengers[index].Tags.push('__part');
-      passengers[index].Passengers = [passengers[index + 1]];
+    for (let index = 0; index < passengers.length; index++) {
+      const part = passengers[index];
+
+      // 見栄え要素の抽出.
+      const look = {};
+      if (part.id === 'item_display' || part.id === 'minecraft:item_display') {
+        if (part.item) {
+          look.item = part.item;
+          delete part.item;
+        }
+      } else if (part.id === 'block_display' || part.id === 'minecraft:block_display') {
+        if (part.block_state) {
+          look.block_state = part.block_state;
+          delete part.block_state;
+        }
+      } else if (part.id === 'text_display' || part.id === 'minecraft:text_display') {
+        if (part.text) {
+          look.text = part.text;
+          delete part.text;
+        }
+      }
+
+      // alias の抽出.
+      if (part.data && part.data.__alias) {
+        look.alias = part.data.__alias;
+        delete part.data.__alias;
+      }
+      looks.unshift(look);
+
+      if (index < passengers.length - 1) {
+        passengers[index].Passengers = [passengers[index + 1]];
+      }
     }
 
     // ルートエンティティのデータタグ.
     // これまでの Passengers はモデルのパーツであり
     // egg で操作するときはこのルートが軸になる.
     const root_data_tag = {
-      Tags: ['ignis', '__uninitialized'],
+      Tags: ['__uninitialized'],
       Passengers: [passengers[0]]
     }
     // mcfunction 書き出し.
-    fs.writeFileSync(path.join(output_dir, 'new.mcfunction'), FILE_HEADER + `summon block_display ~ ~ ~ ${JsonToSNBT.serialize(root_data_tag)}`);
+    fs.writeFileSync(path.join(output_dir, 'new.mcfunction'), FILE_HEADER + `return run summon block_display ~ ~ ~ ${JsonToSNBT.serialize(root_data_tag)}`);
+    const looks_snbt = looks.map(look => JsonToSNBT.serialize(look)).join(', \\\n  ');
+    fs.writeFileSync(path.join(output_dir, 'looks.mcfunction'), FILE_HEADER + `return run data modify storage egg:bdengine ${name} set value [ \\\n  ${looks_snbt} \\\n]`);
   }
 
   // アニメデータ変換.
@@ -303,9 +376,7 @@
         // storage 上で保存された 0 は法滅するので最小の正数値に変換.
         // 結果として実数の配列化されて values を取得.
         const values = match[1].split(',').map(v => {
-          let num = parseFloat(v.trim());
-          if (num === 0) num = NEARLY_ZERO;
-          return num;
+          return parseFloat(v.trim());
         });
         // BDEngine の出力した mcfunction ではパーツ番号順にコードが並んでいるので
         // unshift で先頭に追加していく.
@@ -346,8 +417,18 @@
       }
       // 数値の変換.
       if (typeof data === 'number') {
-        // 小数点以下6桁に丸め、parseFloatで数値に戻すことで末尾の不要な0を除去する
-        const rounded = parseFloat(data.toFixed(6));
+        let val = data;
+        // 0 は storage に残らないので限りなく 0 に近い値に変換.
+        if (val === 0) {
+          val = NEARLY_ZERO;
+        }
+        // 小数点以下6桁に丸め、parseFloatで数値に戻すことで末尾の不要な0を除去する.
+        let rounded = parseFloat(val.toFixed(6));
+        // 丸めによって 0 になってしまった場合の対策.
+        if (rounded === 0 && val !== 0) {
+          // toFixed(6) で 0 にならない最小値.
+          rounded = val > 0 ? NEARLY_ZERO : -NEARLY_ZERO;
+        }
         return `${rounded}f`; // f の接尾辞を追加.
       }
       // ここに来るデータがあるとかなり難あり.
@@ -357,7 +438,7 @@
     // mcfunction 書き出し.
     // 指定されたフレーム数ごとに分割して append していく.
     // 膨大な文字数は読み込みを拒絶されるので適切な分量で区切る必要がある.
-    // egg:bdengine の実装上でも適度なサイズが理想的.
+    // egg:animation の実装上でも適度なサイズが理想的.
 
     // 分割ページ数.
     let page = 1;
@@ -376,7 +457,7 @@
       const sub_filename = `${animation_name}-${page}`;
       fs.writeFileSync(path.join(output_dir, `${sub_filename}.mcfunction`), FILE_HEADER + content);
       // 子関数の実行コマンド追加.
-      sub_functions.push(`function beak:bdengine/${name}/${sub_filename}`);
+      sub_functions.push(`function egg:bdengine/${name}/${sub_filename}`);
       // 次のページへ.
       page++;
     }
@@ -384,13 +465,14 @@
     const init_command = `data modify storage egg:bdengine ${name}-${animation_name} set value []\n`;
     fs.writeFileSync(path.join(output_dir, `${animation_name}.mcfunction`), FILE_HEADER + init_command + sub_functions.join('\n'));
     // load.json への登録情報を返す.
-    return `beak:bdengine/${name}/${animation_name}`;
+    return `egg:bdengine/${name}/${animation_name}`;
   }
 
   // 解凍処理.
   function unzip(source, destination) {
     if (os.platform() === 'win32') {
       // PowerShell を利用 (シングルクォートは '' でエスケープ).
+      // PowerShell なしの Windows では zip 解凍は動作しない.
       const src = source.replace(/'/g, "''");
       const dst = destination.replace(/'/g, "''");
       execSync(`powershell -command "Expand-Archive -LiteralPath '${src}' -DestinationPath '${dst}' -Force"`);
@@ -453,17 +535,16 @@
 
   try {
     // 引数チェック.
-    if (process.argv.length < 4 || process.argv.length > 6)
+    if (process.argv.length < 4 || process.argv.length > 5)
       throw Error('invalid arguments has been given.');
 
     // 引数取得.
-    const input_root   = path.resolve(process.argv[2]);
-    const output_root  = path.resolve(process.argv[3]);
-    const package_name = process.argv[4] || 'beak';
-    const chunk_size   = parseInt(process.argv[5] || 50);
+    const model_dir   = path.resolve(process.argv[2]);
+    const output_dir  = path.resolve(process.argv[3]);
+    const chunk_size  = parseInt(process.argv[4] || 50);
     
     // データパックルート.
-    const datapack_root = path.join(output_root, package_name);
+    const datapack_root = output_dir;
     // load.json 関数リスト.
     let load_functions = [];
 
@@ -477,15 +558,17 @@
     }
 
     // ディレクトリ走査.
-    fs.readdirSync(input_root, {withFileTypes: true}).forEach(entry => {
+    fs.readdirSync(model_dir, {withFileTypes: true}).forEach(entry => {
       let model_name = entry.name;
-      let input_dir  = path.join(input_root, entry.name);
+      let input_dir  = path.join(model_dir, entry.name);
       let temp_dir   = null;
       let should_process = false; // 処理対象かどうか.
 
       if (entry.isDirectory()) {
+        // 解凍済みディレクトリを対象にする.
         should_process = true;
       } else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.zip') {
+        // zip ファイルを解凍して対象にする.
         should_process = true;
         // entry.name == 'xxx.zip' なので拡張子を除外したファイル名で取得.
         model_name = path.parse(entry.name).name;
@@ -503,6 +586,17 @@
           make_directory(output_dir);
           // モデルデータ変換.
           convert_model(input_dir, output_dir, model_name);
+          // モデルデータ呼び出し用の関数タグを生成.
+          const model_tag_dir = path.join(datapack_root, 'data', 'egg', 'tags', 'function', 'bdengine');
+          make_directory(model_tag_dir);
+          const tag_path = path.join(model_tag_dir, `${model_name}.json`);
+          const tag_content = {
+            replace: true,
+            values: [
+              `egg:bdengine/${model_name}/new`
+            ]
+          };
+          fs.writeFileSync(tag_path, JSON.stringify(tag_content, null, 2));
           // アニメデータ変換.
           load_functions.push(...convert_animation_set(input_dir, output_dir, model_name, chunk_size));
         } finally {
