@@ -1,10 +1,21 @@
+// mcbird/beak.js
+// BDEngine が出力する zip データパックから
+// モデルデータとアニメデータを egg:animation で利用可能な形式に変換します.
+// [使い方]
+// >node mcbird/beak.js <input_root> <output_root> [<package_name = "beak"> <chunk_size = 50>]
+// input_root:   複数の zip ファイルが格納されているルートディレクトリ
+// output_root:  egg データパックとその他データパックが格納されているルートディレクトリ
+// package_name: 変換後のデータパック名
+// chunk_size:   １つのファイルに格納するデータ単位（フレーム数）
+// データは minecraft:load によって自動で読み込まれます.
+
 // 無名関数スコープ.
 (async () => {
   // 厳密モード.
   'use strict';
 
   // 設定変数.
-  const NEARLY_ZERO = 1e-6;
+  const NEARLY_ZERO = 1e-10;
   const MIN_VERSION = [82, 0];
   const MAX_VERSION = [94, 1];
   const FILE_HEADER = '# this data is created via BDEngine.\n# Processed by mcbird/bde2egg.js.\n';
@@ -186,10 +197,7 @@
             let val = e;
             if (typeof val === 'number') {
               if (val === 0) val = NEARLY_ZERO; // 0 は storage に残らないので限りなく 0 に近い値に変換.
-              let rounded = parseFloat(val.toFixed(6));
-              if (rounded === 0 && val !== 0) { // 丸められた 0 も 0 に近い値に変換.
-                rounded = val > 0 ? NEARLY_ZERO : -NEARLY_ZERO;
-              }
+              const rounded = parseFloat(val.toFixed(6));
               return rounded.toString() + 'f';
             }
             return JsonToSNBT.serialize(e);
@@ -251,7 +259,7 @@
       Passengers: [passengers[0]]
     }
     // mcfunction 書き出し.
-    fs.writeFileSync(path.join(output_dir, 'new.mcfunction'), FILE_HEADER + `return run summon block_display ~ ~ ~ ${JsonToSNBT.serialize(root_data_tag)}`);
+    fs.writeFileSync(path.join(output_dir, 'new.mcfunction'), FILE_HEADER + `summon block_display ~ ~ ~ ${JsonToSNBT.serialize(root_data_tag)}`);
   }
 
   // アニメデータ変換.
@@ -295,7 +303,9 @@
         // storage 上で保存された 0 は法滅するので最小の正数値に変換.
         // 結果として実数の配列化されて values を取得.
         const values = match[1].split(',').map(v => {
-          return parseFloat(v.trim());
+          let num = parseFloat(v.trim());
+          if (num === 0) num = NEARLY_ZERO;
+          return num;
         });
         // BDEngine の出力した mcfunction ではパーツ番号順にコードが並んでいるので
         // unshift で先頭に追加していく.
@@ -336,18 +346,8 @@
       }
       // 数値の変換.
       if (typeof data === 'number') {
-        let val = data;
-        // 0 は storage に残らないので限りなく 0 に近い値に変換.
-        if (val === 0) {
-          val = NEARLY_ZERO;
-        }
-        // 小数点以下6桁に丸め、parseFloatで数値に戻すことで末尾の不要な0を除去する.
-        let rounded = parseFloat(val.toFixed(6));
-        // 丸めによって 0 になってしまった場合の対策.
-        if (rounded === 0 && val !== 0) {
-          // toFixed(6) で 0 にならない最小値.
-          rounded = val > 0 ? NEARLY_ZERO : -NEARLY_ZERO;
-        }
+        // 小数点以下6桁に丸め、parseFloatで数値に戻すことで末尾の不要な0を除去する
+        const rounded = parseFloat(data.toFixed(6));
         return `${rounded}f`; // f の接尾辞を追加.
       }
       // ここに来るデータがあるとかなり難あり.
@@ -357,7 +357,7 @@
     // mcfunction 書き出し.
     // 指定されたフレーム数ごとに分割して append していく.
     // 膨大な文字数は読み込みを拒絶されるので適切な分量で区切る必要がある.
-    // egg:animation の実装上でも適度なサイズが理想的.
+    // egg:bdengine の実装上でも適度なサイズが理想的.
 
     // 分割ページ数.
     let page = 1;
@@ -376,7 +376,7 @@
       const sub_filename = `${animation_name}-${page}`;
       fs.writeFileSync(path.join(output_dir, `${sub_filename}.mcfunction`), FILE_HEADER + content);
       // 子関数の実行コマンド追加.
-      sub_functions.push(`function egg:bdengine/${name}/${sub_filename}`);
+      sub_functions.push(`function beak:bdengine/${name}/${sub_filename}`);
       // 次のページへ.
       page++;
     }
@@ -384,14 +384,13 @@
     const init_command = `data modify storage egg:bdengine ${name}-${animation_name} set value []\n`;
     fs.writeFileSync(path.join(output_dir, `${animation_name}.mcfunction`), FILE_HEADER + init_command + sub_functions.join('\n'));
     // load.json への登録情報を返す.
-    return `egg:bdengine/${name}/${animation_name}`;
+    return `beak:bdengine/${name}/${animation_name}`;
   }
 
   // 解凍処理.
   function unzip(source, destination) {
     if (os.platform() === 'win32') {
       // PowerShell を利用 (シングルクォートは '' でエスケープ).
-      // PowerShell なしの Windows では zip 解凍は動作しない.
       const src = source.replace(/'/g, "''");
       const dst = destination.replace(/'/g, "''");
       execSync(`powershell -command "Expand-Archive -LiteralPath '${src}' -DestinationPath '${dst}' -Force"`);
@@ -454,16 +453,17 @@
 
   try {
     // 引数チェック.
-    if (process.argv.length < 4 || process.argv.length > 5)
+    if (process.argv.length < 4 || process.argv.length > 6)
       throw Error('invalid arguments has been given.');
 
     // 引数取得.
-    const model_dir   = path.resolve(process.argv[2]);
-    const output_dir  = path.resolve(process.argv[3]);
-    const chunk_size  = parseInt(process.argv[4] || 50);
+    const input_root   = path.resolve(process.argv[2]);
+    const output_root  = path.resolve(process.argv[3]);
+    const package_name = process.argv[4] || 'beak';
+    const chunk_size   = parseInt(process.argv[5] || 50);
     
     // データパックルート.
-    const datapack_root = output_dir;
+    const datapack_root = path.join(output_root, package_name);
     // load.json 関数リスト.
     let load_functions = [];
 
@@ -477,17 +477,15 @@
     }
 
     // ディレクトリ走査.
-    fs.readdirSync(model_dir, {withFileTypes: true}).forEach(entry => {
+    fs.readdirSync(input_root, {withFileTypes: true}).forEach(entry => {
       let model_name = entry.name;
-      let input_dir  = path.join(model_dir, entry.name);
+      let input_dir  = path.join(input_root, entry.name);
       let temp_dir   = null;
       let should_process = false; // 処理対象かどうか.
 
       if (entry.isDirectory()) {
-        // 解凍済みディレクトリを対象にする.
         should_process = true;
       } else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.zip') {
-        // zip ファイルを解凍して対象にする.
         should_process = true;
         // entry.name == 'xxx.zip' なので拡張子を除外したファイル名で取得.
         model_name = path.parse(entry.name).name;
@@ -505,17 +503,6 @@
           make_directory(output_dir);
           // モデルデータ変換.
           convert_model(input_dir, output_dir, model_name);
-          // モデルデータ呼び出し用の関数タグを生成.
-          const model_tag_dir = path.join(datapack_root, 'data', 'egg', 'tags', 'function', 'bdengine');
-          make_directory(model_tag_dir);
-          const tag_path = path.join(model_tag_dir, `${model_name}.json`);
-          const tag_content = {
-            replace: true,
-            values: [
-              `egg:bdengine/${model_name}/new`
-            ]
-          };
-          fs.writeFileSync(tag_path, JSON.stringify(tag_content, null, 2));
           // アニメデータ変換.
           load_functions.push(...convert_animation_set(input_dir, output_dir, model_name, chunk_size));
         } finally {

@@ -1,4 +1,5 @@
-# mcbird-js
+# mcbird-js for egg ver.1.5.2
+
 utility script for mcbird (required Node.js)
 
 ## mcbird-js/nest.js

@@ -1,26 +1,26 @@
-// 無名関数スコープ.
+// 1. 無名関数スコープ.
 (async () => {
-  // 厳密モード.
+  // 2. 厳密モード.
   'use strict';
 
-  // モジュール読み込み.
+  // 3. モジュール読み込み.
   const fs   = require('fs');
   const path = require('path');
 
-  // 引数チェック.
+  // 4. 引数チェック.
   if (process.argv.length < 4) {
     console.error('Usage: node js/nest.js <input_dir> <output_dir>');
     process.exit(1);
   }
 
-  // 引数取得.
+  // 5. 引数取得.
   const input_dir  = path.resolve(process.argv[2]);
   const output_dir = path.resolve(process.argv[3]);
 
-  // テスト構造格納用オブジェクト.
+  // 6. テスト構造格納用オブジェクト.
   const test = {};
 
-  // 関数名の取得.
+  // 7. 関数名の取得.
   // <namespace>:<path> 形式で取得します.
   function get_function_namespace(filepath, root_dir) {
     const relative_path = path.relative(root_dir, filepath);
@@ -28,7 +28,6 @@
     
     // data/namespace/function/... の形式であることを確認する.
     // parts[0] は data である必要がある.
-    // <root_dir>/<datapack_name>/data/<namespace>/function/<...(function_path)>
     if (parts.length < 4 || parts[0] !== 'data' || parts[2] !== 'function') {
       return null;
     }
@@ -40,7 +39,7 @@
     return `${namespace}:${function_path}`;
   }
 
-  // ファイル解析.
+  // 8. ファイル解析.
   function parse_file(filepath) {
     const content = fs.readFileSync(filepath, 'utf8');
     const lines = content.split('\n');
@@ -106,7 +105,7 @@
     }
   }
 
-  // ディレクトリ走査
+  // 9. ディレクトリ走査
   // 再帰的に走査していく.
   function scan(dir) {
     if (!fs.existsSync(dir)) return;
@@ -124,12 +123,12 @@
     }
   }
 
-  // 実行.
+  // 10. 実行.
   // データパックのルートから走査開始.
   scan(input_dir);
 
   // 検証.
-  // 動作に支障がある or 違和感のある構造に対して警告ログを出力する.
+  // 動作に師匠がある or 違和感のある構造に対して警告ログを出力する.
   for (const unit in test) {
     for (const suite in test[unit]) {
       const suite_structure = test[unit][suite];
@@ -150,7 +149,7 @@
     }
   }
 
-  // ファイルのコピーと変換.
+  // 11. ファイルのコピーと変換.
   // 付属機能のプリプロセッサを解決.
   function transform_test_commands(content, filepath, root_dir) {
     const function_name = get_function_namespace(filepath, root_dir) || path.relative(root_dir, filepath).replace(/\\/g, '/');
@@ -167,18 +166,6 @@
         // テスト用プリプロセッサ.
         const assert_keyword = ' assert ';
         const deny_keyword   = ' deny ';
-        const failure_keyword = ' failure ';
-
-        // #:test failure ...
-        // 無条件で失敗するので下記の assert, deny のような条件判定は不要.
-        const failure_index = trimmed.indexOf(failure_keyword);
-        if (failure_index !== -1) {
-          const fail_message = trimmed.substring(failure_index + failure_keyword.length).trim();
-          const escaped_message = fail_message.replace(/"/g, '\\"');
-          const nbt = `{file:"${function_name}",line:${index + 1},message:"${escaped_message}"}`;
-          transformed_content.push(`return run function nest:failex ${nbt}`);
-          continue;
-        }
 
         // #:test ... assert(deny) ... という書式なので
         // #:test を検知したら最初に出てくる assert(deny) を探す.
@@ -206,20 +193,50 @@
           const escaped_expression = expression.replace(/"/g, '\\"');
           // エラーメッセージ.
           // 行番号は 1 から始まる整数なので 0 から始まる index に 1 加算する必要あり.
-          const full_message = `${message} (${escaped_expression})`;
-          const nbt = `{file:"${function_name}",line:${index + 1},message:"${full_message}"}`;
+          const text = `{"text":"${function_name}: ${index + 1}: ${message} (${escaped_expression})"}`;
           // 前提条件は存在しない場合があるので空文字対応が必要.
           const execute_prefix = condition ? `${condition} ` : '';
           // 前提条件を keyword_index - 1 ではなく keyword_index で取っているので末尾にスペースがあるか空文字.
           // なので ${execute_prefix} ${command_type} とするとスペース過多になる.
-          transformed_content.push(`execute ${execute_prefix}${command_type} ${expression} run return run function nest:failex ${nbt}`);
+          transformed_content.push(`execute ${execute_prefix}${command_type} ${expression} run return run function nest:fail ${text}`);
         } else {
           // assert/deny がない不正な形式の場合は、クリーンアップ処理で削除されるようにそのまま残す
           transformed_content.push(line);
         }
       } else {
-        // こちらも不正な形式は最終的なクリーンアップをするのでそのままで処理.
-        transformed_content.push(line);
+        // ログ出力プロセッサ.
+        const regex = /^#:(report|info|warning|error)\s+(storage|score|entity)\s+(\S+)\s+(\S+)\s*\|\s*(.*)$/;
+        const log_match = trimmed.match(regex);
+        if (log_match) {
+          // マッチを一括代入.
+          const [, keyword, type, arg1, arg2, message] = log_match;
+          // メッセージのエスケープ処理.
+          const escaped_message = message.trim().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          
+          let label = '';
+          let json_component = '';
+
+          if (type === 'storage') {
+            // storage <namespace> <path>
+            label = `storage ${arg1} ${arg2}`;
+            json_component = `{"storage":"${arg1}","nbt":"${arg2}"}`;
+          } else if (type === 'score') {
+            // score <score_holder> <objective>
+            label = `score ${arg1} ${arg2}`;
+            json_component = `{"score":{"name":"${arg1}","objective":"${arg2}"}}`;
+          } else if (type === 'entity') {
+            // entity <entity> <path>
+            label = `entity ${arg1} ${arg2}`;
+            json_component = `{"entity":"${arg1}","nbt":"${arg2}"}`;
+          }
+
+          // tellraw で json テキストを出力.
+          const json_string = `[{"text":"${function_name}: ${index + 1}:[${keyword.toUpperCase()}] ${escaped_message}\\n${label}:"},${json_component}]`;
+          transformed_content.push(`tellraw @a ${json_string}`);
+        } else {
+          // こちらも不正な形式は最終的なクリーンアップをするのでそのままで処理.
+          transformed_content.push(line);
+        }
       }
     }
     return transformed_content.join('\n');
@@ -268,7 +285,7 @@
     return;
   }
 
-  // ログ出力とエイリアス生成.
+  // 12. ログ出力とエイリアス生成.
   const alias_dir = path.join(output_dir, 'data', 'nest', 'tags', 'function', 'alias');
   fs.mkdirSync(alias_dir, {recursive: true});
 
@@ -295,7 +312,7 @@
     }
   }
 
-  // ユニットごとの登録関数生成.
+  // 13. ユニットごとの登録関数生成.
   const generated_dir = path.join(output_dir, 'data', 'nest', 'function', '__generated');
   fs.mkdirSync(generated_dir, {recursive: true});
 
@@ -316,7 +333,7 @@
     fs.writeFileSync(path.join(generated_dir, `${unit}.mcfunction`), command);
   }
 
-  // 登録関数を呼び出すロードタグを生成.
+  // 14. 登録関数を呼び出すロードタグを生成
   const load_json_path = path.join(output_dir, 'data', 'nest', 'tags', 'function', 'load.json');
   const generated_functions = Object.keys(test).map(unit => `nest:__generated/${unit}`);
 
